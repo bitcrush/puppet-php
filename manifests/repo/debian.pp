@@ -17,85 +17,78 @@
 # [*key*]
 #   Public key in apt::key format
 #
-# [*dotdeb*]
-#   Enable special dotdeb handling
-#
-# [*sury*]
-#   Enable special sury handling
-#
-class php::repo::debian(
-  $location     = 'http://packages.dotdeb.org',
-  $release      = 'wheezy-php56',
-  $repos        = 'all',
-  $include_src  = false,
-  $key          = {
-    'id'     => '6572BBEF1B5FF28B28B706837E3F070089DF5277',
-    'source' => 'http://www.dotdeb.org/dotdeb.gpg',
-  },
-  $dotdeb       = true,
-  $sury         = true,
+class php::repo::debian (
+  Boolean                   $include_src = false,
+  Optional[Stdlib::Httpurl] $location    = undef,
+  Optional[String[1]]       $release     = undef,
+  Optional[String[1]]       $repos       = undef,
+  Optional[Hash]            $key         = undef,
 ) {
-
   if $caller_module_name != $module_name {
     warning('php::repo::debian is private')
   }
 
-  include '::apt'
+  include apt
 
-  create_resources(::apt::key, { 'php::repo::debian' => {
-    id     => $key['id'],
-    source => $key['source'],
-  }})
-
-  ::apt::source { "source_php_${release}":
-    location => $location,
-    release  => $release,
-    repos    => $repos,
-    include  => {
-      'src' => $include_src,
-      'deb' => true,
-    },
-    require  => Apt::Key['php::repo::debian'],
+  # Required for HTTPS URLs (apt-transport-https is ensured by the puppetlabs-apt module)
+  unless $key.dig('source') =~ /\Ahttp:/ and $location =~ /\Ahttp:/ {
+    ensure_packages(['ca-certificates'], { 'ensure' => 'present' })
+    $require_https_pkgs = Package['ca-certificates']
   }
 
-  if ($dotdeb) {
-    # both repositories are required to work correctly
-    # See: http://www.dotdeb.org/instructions/
-    if $release == 'wheezy-php56' {
-      ::apt::source { 'dotdeb-wheezy':
-        location => $location,
+  case $facts['os']['distro']['codename'] {
+    'wheezy': {
+      $version_string = $php::globals::php_version.regsubst('\.', '')
+
+      # Add dotdeb key + repository
+      apt::key { 'php::repo::debian':
+        id      => pick($key.dig('id'), '6572BBEF1B5FF28B28B706837E3F070089DF5277'),
+        source  => pick($key.dig('source'), 'https://www.dotdeb.org/dotdeb.gpg'),
+        require => $require_https_pkgs,
+      }
+
+      apt::source { 'dotdeb-wheezy':
+        location => pick($location, 'https://packages.dotdeb.org'),
         release  => 'wheezy',
-        repos    => $repos,
+        repos    => pick($repos, 'all'),
         include  => {
           'src' => $include_src,
           'deb' => true,
         },
+        require  => Apt::Key['php::repo::debian'],
+      }
+      apt::source { "dotdeb-wheezy-php${version_string}":
+        location => pick($location, 'https://packages.dotdeb.org'),
+        release  => "wheezy-php${version_string}",
+        repos    => pick($repos, 'all'),
+        include  => {
+          'src' => $include_src,
+          'deb' => true,
+        },
+        require  => Apt::Key['php::repo::debian'],
       }
     }
-  }
+    'jessie', 'stretch': {
+      # Add sury key + repository
+      apt::key { 'php::repo::debian':
+        id      => pick($key.dig('id'), 'DF3D585DB8F0EB658690A554AC0E47584A7A714D'),
+        source  => pick($key.dig('source'), 'https://packages.sury.org/php/apt.gpg'),
+        require => $require_https_pkgs,
+      }
 
-  if ($sury and $php::globals::php_version == '7.1') {
-    # Required packages for PHP 7.1 repository
-    ensure_packages(['lsb-release', 'ca-certificates'], {'ensure' => 'present'})
-
-    # Add PHP 7.1 key + repository
-    apt::key { 'php::repo::debian-php71':
-      id     => 'DF3D585DB8F0EB658690A554AC0E47584A7A714D',
-      source => 'https://packages.sury.org/php/apt.gpg',
+      apt::source { 'sury-php':
+        location => pick($location, 'https://packages.sury.org/php/'),
+        release  => $facts['os']['distro']['codename'],
+        repos    => pick($repos, 'main'),
+        include  => {
+          'src' => $include_src,
+          'deb' => true,
+        },
+        require  => Apt::Key['php::repo::debian'],
+      }
     }
-
-    ::apt::source { 'source_php_71':
-      location => 'https://packages.sury.org/php/',
-      release  => $::lsbdistcodename,
-      repos    => 'main',
-      include  => {
-        'src' => $include_src,
-        'deb' => true,
-      },
-      require  => [
-        Apt::Key['php::repo::debian-php71'],
-        Package['apt-transport-https', 'lsb-release', 'ca-certificates']
-      ],
+    default: {
+      fail("Unsupported Debian distribution: ${facts['os']['distro']['codename']}")
     }
   }
 }
